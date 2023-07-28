@@ -2,6 +2,7 @@ wayland = dependency(
     'wayland-client',
     default_options: ['tests=false', 'documentation=false', 'dtd_validation=false']
 )
+sqlite = dependency('sqlite3')
 
 cc = meson.get_compiler('c')
 have_memfd = cc.has_header_symbol('sys/syscall.h', 'SYS_memfd_create')
@@ -52,7 +53,10 @@ lib = static_library(
     'types/registry.c',
     'types/copy-action.h',
     'types/copy-action.c',
-    dependencies: wayland,
+        'clip-saver.h',
+        'clip-saver.c',
+
+    dependencies: [ wayland, sqlite ],
     link_with: protocol_deps
 )
 
@@ -65,7 +69,7 @@ executable(
     install: true
 )
 executable(
-    'wl-paste',
+    'wl-paste-sqlite',
     'wl-paste.c',
     protocol_headers,
     dependencies: wayland,

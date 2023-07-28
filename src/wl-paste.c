@@ -25,6 +25,7 @@
 #include "util/files.h"
 #include "util/string.h"
 #include "util/misc.h"
+#include "clip-saver.h"
 
 #include <wayland-client.h>
 #include <unistd.h>
@@ -60,6 +61,7 @@ struct types {
 
 static struct wl_display *wl_display = NULL;
 static struct popup_surface *popup_surface = NULL;
+static sqlite3 *db = NULL;
 static int offer_received = 0;
 
 static struct types classify_offer_types(struct offer *offer) {
@@ -174,12 +176,12 @@ static const char *mime_type_to_request(struct types types) {
 #undef try_any_text
 #undef try_any
 
-static int run_paste_command(int stdin_fd, const char *clipboard_state) {
+/* static int run_paste_command(int stdin_fd, const char *clipboard_state) {
     /* Spawn a cat to perform the copy.
      * If watch mode is active, we spawn
      * a custom command instead.
      */
-    pid_t pid = fork();
+/* pid_t pid = fork();
     if (pid < 0) {
         perror("fork");
         close(stdin_fd);
@@ -207,6 +209,52 @@ static int run_paste_command(int stdin_fd, const char *clipboard_state) {
     }
     close(stdin_fd);
     waitpid(pid, NULL, 0);
+    return 1;
+} */
+
+static int run_paste_command(int stdin_fd, const char *clipboard_state, const char *mime_type) {
+    int max_read_len = 4096;
+    byte buf[max_read_len];
+
+    ssize_t read_cur = 0, malloc_size = (max_read_len + 1);
+    byte *result = malloc(sizeof(byte) * malloc_size);
+
+    ssize_t got;
+    while (1) {
+        got = read(stdin_fd, buf, max_read_len);
+        if (got < 0) {
+            printf("Unable to continue read.\n");
+            return 1;
+        } else if (got == 0) {
+            if (mime_type_is_text(mime_type)) {
+                if (read_cur + 1 > malloc_size) {
+                    malloc_size += 1;
+                    result = realloc(result, malloc_size);
+                }
+                result[read_cur++] = '\0';
+            }
+            break;
+        } else {
+            if (read_cur + got > malloc_size) {
+                malloc_size += got * 2;
+                result = realloc(result, malloc_size);
+            }
+
+            for (int i = 0; i < got; i++) {
+                result[read_cur++] = buf[i];
+            }
+        }
+    }
+
+    if (mime_type_is_text(mime_type)) {
+        cdb_insert_text(db, result, read_cur + 1, mime_type);
+    } else {
+        cdb_insert_blob(db, result, read_cur + 1, mime_type);
+    }
+
+    free(result);
+    close(stdin_fd);
+
     return 1;
 }
 
@@ -256,7 +304,7 @@ static void selection_callback(struct offer *offer, int primary) {
             perror("open /dev/null");
             return;
         }
-        run_paste_command(devnull, "nil");
+        run_paste_command(devnull, "nil", "null");
         return;
     }
 
@@ -313,7 +361,7 @@ static void selection_callback(struct offer *offer, int primary) {
     wl_display_flush(wl_display);
 
     close(pipefd[1]);
-    rc = run_paste_command(pipefd[0], "data");
+    rc = run_paste_command(pipefd[0], "data", mime_type);
     if (!rc) {
         if (options.watch) {
             /* Try to cope without exiting completely */
@@ -522,6 +570,8 @@ int main(int argc, argv_t argv) {
         popup_surface->seat = seat;
         popup_surface_init(popup_surface);
     }
+
+    db = cdb_maybe_create_table(options.watch_command[0]);
 
     while (wl_display_dispatch(wl_display) >= 0);
 
